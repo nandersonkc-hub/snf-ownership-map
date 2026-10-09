@@ -17,6 +17,11 @@ RAW = os.path.join(ROOT, 'data', 'raw')
 CATALOG = 'https://data.cms.gov/data.json'
 HEADERS = {'User-Agent': 'snf-ownership-map/1.0 (monthly data refresh)'}
 
+def note(level, msg):
+    """Print a message GitHub shows as an annotation on the run page (level: warning or error)."""
+    msg = str(msg).replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+    print('::%s::%s' % (level, msg[:900]), flush=True)
+
 SOURCES = {
     'enrollments': dict(env='ENROLLMENTS_URL', title=r'skilled nursing facility enrollments', label='SNF_Enrollments'),
     'owners': dict(env='OWNERS_URL', title=r'skilled nursing facility all owners', label='SNF_All_Owners'),
@@ -28,7 +33,7 @@ def catalog_urls():
     try:
         cat = requests.get(CATALOG, headers=HEADERS, timeout=120).json()
     except Exception as e:
-        print('  catalog unavailable:', e); return {}
+        note('warning', 'catalog unavailable: %s' % e); return {}
     out = {}
     for ds in cat.get('dataset', []):
         title = (ds.get('title') or '').lower()
@@ -88,11 +93,18 @@ def main():
                 try:
                     fetch(key, u); ok = True; print('  ok via', how); break
                 except Exception as e:
-                    print('  failed via %s: %s' % (how, e))
+                    note('warning', '%s failed for %s via %s: %s' % (u, key, how, e))
             if not ok: failed.append(key)
         if failed:
-            sys.exit('Could not download: %s. Existing data.json left unchanged.' % ', '.join(failed))
+            note('error', 'Could not download: %s. Existing data.json left unchanged.' % ', '.join(failed)); sys.exit(1)
     subprocess.check_call([sys.executable, os.path.join(ROOT, 'scripts', 'build_data.py'), '--raw', RAW, '--out', os.path.join(ROOT, 'data.json')])
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except SystemExit as e:
+        if e.code not in (0, None):
+            note('error', 'build stopped: %s' % e.code)
+        raise
+    except Exception as e:
+        note('error', '%s: %s' % (type(e).__name__, e)); raise

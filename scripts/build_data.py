@@ -122,7 +122,7 @@ def main():
     if len(owners) < 2000: problems.append('only %d multi-building owners' % len(owners))
     if nocoord > len(fac) * .02: problems.append('%d buildings without coordinates' % nocoord)
     if problems:
-        sys.exit('Refusing to write data.json: ' + '; '.join(problems))
+        print('::error::Refusing to write data.json: ' + '; '.join(problems)); sys.exit(1)
 
     keys = ['nm', 'op', 'ad', 'ci', 's', 'z', 'pt', 'ch', 'ccn', 'lat', 'lng']
     data = dict(keys=keys, F=[[x[k] for k in keys] for x in fac], chains=chains, national=national,
