@@ -3,7 +3,7 @@
 
 Usage: python scripts/build_data.py --raw data/raw --out data.json
 
-Expects three CSVs in --raw whose names contain "Enroll", "Owners" and "Chain".
+Finds the three CSVs in --raw by their column headers, so file names do not matter.
 """
 import argparse, csv, glob, json, os, random, re, sys
 from collections import defaultdict, Counter
@@ -12,13 +12,24 @@ import zipcodes
 
 csv.field_size_limit(10**8)
 
-def find(raw, *needles):
-    files = [f for f in glob.glob(os.path.join(raw, '*.csv'))]
-    for n in needles:
-        hits = [f for f in files if n.lower() in os.path.basename(f).lower()]
-        if hits:
-            return sorted(hits)[-1]
-    sys.exit('No CSV matching %s in %s (found: %s)' % (needles, raw, [os.path.basename(f) for f in files]))
+def header(path):
+    with open(path, 'rb') as fh:
+        line = fh.readline()
+    try:
+        text = line.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = line.decode('cp1252', errors='replace')
+    return [c.strip().strip('"') for c in text.strip().split(',')]
+
+def find(raw, *required):
+    """Pick the CSV in `raw` whose header row contains all the `required` column names."""
+    files = sorted(glob.glob(os.path.join(raw, '*.csv')))
+    for f in files:
+        cols = header(f)
+        if all(r in cols for r in required):
+            return f
+    seen = ['%s: %s' % (os.path.basename(f), ', '.join(header(f)[:6])) for f in files]
+    raise RuntimeError('No CSV with columns %s. Files seen: %s' % (list(required), seen or 'none'))
 
 def read(path):
     raw = open(path, 'rb').read()
@@ -48,7 +59,9 @@ def main():
     ap.add_argument('--raw', default='data/raw')
     ap.add_argument('--out', default='data.json')
     a = ap.parse_args()
-    ef, of, cf = find(a.raw, 'enroll'), find(a.raw, 'owners'), find(a.raw, 'chain')
+    ef = find(a.raw, 'NURSING HOME PROVIDER NAME', 'AFFILIATION ENTITY ID')
+    of = find(a.raw, 'ASSOCIATE ID - OWNER', 'ROLE CODE - OWNER')
+    cf = find(a.raw, 'Chain ID', 'Number of facilities')
     print('enrollments:', os.path.basename(ef)); print('owners:', os.path.basename(of)); print('chains:', os.path.basename(cf))
     enr, own, chn = read(ef), read(of), read(cf)
 
@@ -134,4 +147,10 @@ def main():
     print('wrote', a.out, os.path.getsize(a.out) // 1024, 'KB;', len(chain_list), 'chains,', len(owners), 'owners,', len(mgrs), 'managers')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        print('::error::%s: %s' % (type(e).__name__, str(e).replace('\n', ' ')[:800]))
+        raise
