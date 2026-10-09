@@ -1,0 +1,5 @@
+{
+  "enrollments": "https://data.cms.gov/sites/default/files/dataset_zips/68bc47ae63b3d096ddd7b01f651da1ba/Skilled%20Nursing%20Facility%20Enrollments.zip",
+  "owners": "https://data.cms.gov/sites/default/files/dataset_zips/48d436314549e9159ed8cce0d4d665ca/Skilled%20Nursing%20Facility%20All%20Owners.zip",
+  "chain": "https://data.cms.gov/sites/default/files/dataset_zips/599411ed933b2f5d9db21fcd81b1d371/Nursing%20Home%20Chain%20Performance%20Measures.zip"
+}
