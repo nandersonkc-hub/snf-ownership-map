@@ -22,14 +22,27 @@ def header(path):
     return [c.strip().strip('"') for c in text.strip().split(',')]
 
 def find(raw, *required):
-    """Pick the CSV in `raw` whose header row contains all the `required` column names."""
+    """Pick the CSV in `raw` whose header row has every required column.
+    A tuple means any one of those names will do (CMS renamed some columns between releases)."""
     files = sorted(glob.glob(os.path.join(raw, '*.csv')))
     for f in files:
         cols = header(f)
-        if all(r in cols for r in required):
+        if all((any(x in cols for x in r) if isinstance(r, tuple) else r in cols) for r in required):
             return f
     seen = ['%s: %s' % (os.path.basename(f), ', '.join(header(f)[:6])) for f in files]
     raise RuntimeError('No CSV with columns %s. Files seen: %s' % (list(required), seen or 'none'))
+
+def pick(row, *phrases):
+    """First value whose column name equals (or else contains) one of the phrases, ignoring case."""
+    low = {k.strip().lower(): v for k, v in row.items() if k}
+    for ph in phrases:
+        if ph.lower() in low:
+            return low[ph.lower()]
+    for ph in phrases:
+        for k, v in low.items():
+            if ph.lower() in k:
+                return v
+    return None
 
 def read(path):
     raw = open(path, 'rb').read()
@@ -61,22 +74,26 @@ def main():
     a = ap.parse_args()
     ef = find(a.raw, 'NURSING HOME PROVIDER NAME', 'AFFILIATION ENTITY ID')
     of = find(a.raw, 'ASSOCIATE ID - OWNER', 'ROLE CODE - OWNER')
-    cf = find(a.raw, 'Chain ID', 'Number of facilities')
+    cf = find(a.raw, ('Chain ID', 'Affiliated entity ID'), 'Number of facilities')
     print('enrollments:', os.path.basename(ef)); print('owners:', os.path.basename(of)); print('chains:', os.path.basename(cf))
     enr, own, chn = read(ef), read(of), read(cf)
 
     chains, national = {}, {}
     for c in chn:
-        rec = dict(n=c['Chain'], fac=num(c['Number of facilities']), st=num(c['Number of states and territories with operations']),
-                   sff=num(c['Number of Special Focus Facilities (SFF)']), ab=num(c['Percentage of facilities with an abuse icon']),
-                   fp=num(c['Percent of facilities classified as for-profit']), ov=num(c['Average overall 5-star rating']),
-                   hi=num(c['Average health inspection rating']), sf=num(c['Average staffing rating']),
-                   q=num(c['Average quality rating']), fines=num(c['Total amount of fines in dollars']),
-                   to=num(c['Average total nursing staff turnover percentage']))
-        if c['Chain ID']:
-            chains[c['Chain ID']] = rec
+        cid = (pick(c, 'Chain ID', 'Affiliated entity ID') or '').strip()
+        rec = dict(n=(pick(c, 'Chain', 'Affiliated entity') or '').strip(),
+                   fac=num(pick(c, 'Number of facilities')), st=num(pick(c, 'Number of states')),
+                   sff=num(pick(c, 'Number of Special Focus Facilities')), ab=num(pick(c, 'Percentage of facilities with an abuse icon')),
+                   fp=num(pick(c, 'Percent of facilities classified as for-profit')), ov=num(pick(c, 'Average overall 5-star rating', 'overall 5-star')),
+                   hi=num(pick(c, 'Average health inspection rating')), sf=num(pick(c, 'Average staffing rating')),
+                   q=num(pick(c, 'Average quality rating')), fines=num(pick(c, 'Total amount of fines in dollars')),
+                   to=num(pick(c, 'Average total nursing staff turnover percentage')))
+        if cid:
+            chains[cid] = rec
         else:
             national = {k: rec[k] for k in ('ov', 'hi', 'sf', 'q', 'ab', 'to')}
+    rated = sum(1 for c in chains.values() if c['ov'] is not None)
+    print('chains', len(chains), 'with overall rating', rated)
 
     fac, eid2i, nocoord = [], {}, 0
     for r in enr:
@@ -132,6 +149,7 @@ def main():
     problems = []
     if len(fac) < 10000: problems.append('only %d facilities' % len(fac))
     if len(chain_list) < 300: problems.append('only %d chains' % len(chain_list))
+    if rated < 300: problems.append('only %d chains have an overall rating (column names may have changed: %s)' % (rated, list(chn[0].keys())[:14]))
     if len(owners) < 2000: problems.append('only %d multi-building owners' % len(owners))
     if nocoord > len(fac) * .02: problems.append('%d buildings without coordinates' % nocoord)
     if problems:

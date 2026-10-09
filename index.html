@@ -943,36 +943,57 @@ function starsHTML(v){return '<span class="stars" style="--p:'+Math.max(0,Math.m
 function rate(v){return v==null?'<span class="muted">n/a</span>':starsHTML(v)+' <span style="font-variant-numeric:tabular-nums">'+v.toFixed(1)+'</span>'}
 
 /* ---------- map ---------- */
-var map=L.map('map',{preferCanvas:true,zoomControl:true,minZoom:3,maxZoom:14,zoomSnap:.5,worldCopyJump:false});
+var map=L.map('map',{preferCanvas:true,zoomControl:true,minZoom:3,maxZoom:14,zoomSnap:.5,worldCopyJump:false,zoomAnimation:false,fadeAnimation:false,markerZoomAnimation:false});
 map.fitBounds([[24.3,-125.5],[49.8,-66.2]]);
-var states=STATES;
-var statesLayer=L.geoJSON(states,{interactive:false,style:function(){return {color:cssv('--state-line'),weight:1,fillColor:cssv('--state-fill'),fillOpacity:1}}}).addTo(map);
-var renderer=L.canvas({padding:.4,tolerance:7});
-var markers=[];var markerOf={};
+var statesLayer=L.geoJSON(STATES,{interactive:false,style:function(){return {color:cssv('--state-line'),weight:1,fillColor:cssv('--state-fill'),fillOpacity:1}}}).addTo(map);
 var selSet=null,selFac=-1;
 function radius(){var z=map.getZoom();return z<=4?2.6:z<=5?3.3:z<=6.5?4.2:z<=8.5?5.2:6.5}
-function styleOf(f){
-  var v=starOf(f),col=v==null?naColor():ramp(v),r=radius();
-  if(f.i===selFac)return {radius:r+4,weight:3,color:cssv('--ring'),fillColor:col,fillOpacity:1,opacity:1};
-  if(selSet){
-    if(selSet.has(f.i))return {radius:r+2,weight:1.6,color:cssv('--ring'),fillColor:col,fillOpacity:1,opacity:1};
-    return {radius:Math.max(1.8,r-1.5),weight:0,color:col,fillColor:col,fillOpacity:.13,opacity:0};
-  }
-  return {radius:r,weight:.7,color:isDark()?'#0a0f14':'#ffffff',fillColor:col,fillOpacity:v==null?.7:.92,opacity:.9};
+
+/* One canvas paints every building in a single pass. Dots are grouped into 22 color buckets so the
+   browser fills each bucket with one path instead of drawing 14,000 separate shapes. */
+var cv=document.createElement('canvas');cv.style.cssText='position:absolute;left:0;top:0;z-index:450;pointer-events:none';
+map.getContainer().appendChild(cv);
+var ctx=cv.getContext('2d');
+var NB=21,BCOL=[],RING='#000',EDGE='#fff';
+var PTS=[];FAC.forEach(function(f){if(f.lat!=null)PTS.push(f.i)});
+var BK=new Uint8Array(FAC.length);
+FAC.forEach(function(f){var v=starOf(f);BK[f.i]=v==null?NB:Math.round((Math.min(5,Math.max(1,v))-1)*5)});
+function buildColors(){for(var k=0;k<NB;k++)BCOL[k]=ramp(1+k/5);BCOL[NB]=naColor();RING=cssv('--ring');EDGE=isDark()?'#0a0f14':'#ffffff'}
+var PX=new Float64Array(FAC.length),PY=new Float64Array(FAC.length),pz=null;
+function project(){var z=map.getZoom();if(z===pz)return;pz=z;for(var n=0;n<PTS.length;n++){var i=PTS[n],p=map.project([FAC[i].lat,FAC[i].lng],z);PX[i]=p.x;PY[i]=p.y}}
+var raf=0;
+function schedule(){if(!raf)raf=requestAnimationFrame(draw)}
+function restyle(){schedule()}
+function fitCanvas(){var sz=map.getSize(),d=window.devicePixelRatio||1,w=Math.round(sz.x*d),h=Math.round(sz.y*d);
+  if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;cv.style.width=sz.x+'px';cv.style.height=sz.y+'px'}
+  ctx.setTransform(d,0,0,d,0,0);return sz}
+function draw(){
+  raf=0;var sz=fitCanvas();ctx.clearRect(0,0,sz.x,sz.y);if(!sz.x||!sz.y)return;project();
+  var tl=map.getPixelBounds().min,ox=tl.x,oy=tl.y,r=radius(),pad=r+8,k,j,i,x,y,groups=[],sels=[];
+  for(k=0;k<=NB;k++)groups.push([]);
+  for(var n=0;n<PTS.length;n++){i=PTS[n];x=PX[i]-ox;y=PY[i]-oy;
+    if(x<-pad||y<-pad||x>sz.x+pad||y>sz.y+pad)continue;
+    if(selSet&&selSet.has(i)){sels.push(i,x,y);continue}
+    groups[BK[i]].push(x,y)}
+  var dim=!!selSet,rr=dim?Math.max(1.8,r-1.5):r;
+  if(!dim){ctx.fillStyle=EDGE;ctx.globalAlpha=.9;ctx.beginPath();
+    for(k=0;k<=NB;k++){var h=groups[k];for(j=0;j<h.length;j+=2){ctx.moveTo(h[j]+rr+.8,h[j+1]);ctx.arc(h[j],h[j+1],rr+.8,0,6.2832)}}
+    ctx.fill()}
+  for(var q=0;q<=NB;q++){k=(q+NB)%(NB+1);var g=groups[k];if(!g.length)continue;   /* unrated gray first, rated colors on top */
+    ctx.fillStyle=BCOL[k];ctx.globalAlpha=dim?.13:(k===NB?.75:.95);
+    ctx.beginPath();for(j=0;j<g.length;j+=2){ctx.moveTo(g[j]+rr,g[j+1]);ctx.arc(g[j],g[j+1],rr,0,6.2832)}
+    ctx.fill()}
+  ctx.globalAlpha=1;ctx.strokeStyle=RING;ctx.lineWidth=1.6;
+  for(j=0;j<sels.length;j+=3){ctx.fillStyle=BCOL[BK[sels[j]]];ctx.beginPath();ctx.arc(sels[j+1],sels[j+2],r+2,0,6.2832);ctx.fill();ctx.stroke()}
+  if(selFac>=0&&FAC[selFac].lat!=null){x=PX[selFac]-ox;y=PY[selFac]-oy;ctx.lineWidth=3;ctx.fillStyle=BCOL[BK[selFac]];ctx.beginPath();ctx.arc(x,y,r+4,0,6.2832);ctx.fill();ctx.stroke()}
 }
-FAC.forEach(function(f){
-  if(f.lat==null)return;
-  var m=L.circleMarker([f.lat,f.lng],Object.assign({renderer:renderer,bubblingMouseEvents:false},styleOf(f)));
-  m.fid=f.i;m.on('click',function(){openFac(f.i,true)});
-  m.addTo(map);markers.push(m);markerOf[f.i]=m;
+map.on('move zoom viewreset resize moveend',schedule);
+map.on('click',function(e){
+  project();var tl=map.getPixelBounds().min,cx=e.containerPoint.x,cy=e.containerPoint.y,R=radius()+8,R2=R*R,best=-1,bd=1e9;
+  for(var n=0;n<PTS.length;n++){var i=PTS[n],dx=PX[i]-tl.x-cx;if(dx>R||dx<-R)continue;var dy=PY[i]-tl.y-cy;if(dy>R||dy<-R)continue;
+    var d=dx*dx+dy*dy;if(d>R2)continue;if(selSet&&!selSet.has(i))d+=R2;if(d<bd){bd=d;best=i}}
+  if(best>=0)openFac(best,true);
 });
-function restyle(){
-  var front=[];
-  markers.forEach(function(m){var f=FAC[m.fid];m.setStyle(styleOf(f));m.setRadius(styleOf(f).radius);if(selSet&&(selSet.has(f.i)||f.i===selFac))front.push(m)});
-  front.forEach(function(m){m.bringToFront()});
-  if(selFac>=0&&markerOf[selFac])markerOf[selFac].bringToFront();
-}
-map.on('zoomend',function(){restyle();labels()});
 /* city labels give context since there are no street tiles */
 var cityGroups={};FAC.forEach(function(f){if(f.lat==null)return;var k=f.ci+'|'+f.s;var g=cityGroups[k]||(cityGroups[k]={n:0,lat:0,lng:0,nm:f.ci,s:f.s});g.n++;g.lat+=f.lat;g.lng+=f.lng});
 var cityList=Object.keys(cityGroups).map(function(k){var g=cityGroups[k];g.lat/=g.n;g.lng/=g.n;return g}).sort(function(a,b){return b.n-a.n});
@@ -984,11 +1005,18 @@ function labels(){
     if(b.contains([g.lat,g.lng])){L.marker([g.lat,g.lng],{interactive:false,keyboard:false,icon:L.divIcon({className:'city-label',html:esc(g.nm),iconSize:[0,0],iconAnchor:[-6,-6]})}).addTo(labelLayer);c++}}
 }
 map.on('moveend',labels);
-function themeRefresh(){statesLayer.setStyle({color:cssv('--state-line'),fillColor:cssv('--state-fill')});restyle();setLegend()}
+function themeRefresh(){statesLayer.setStyle({color:cssv('--state-line'),fillColor:cssv('--state-fill')});buildColors();schedule();setLegend()}
 if(window.matchMedia)matchMedia('(prefers-color-scheme: dark)').addEventListener&&matchMedia('(prefers-color-scheme: dark)').addEventListener('change',themeRefresh);
 new MutationObserver(themeRefresh).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-setLegend();labels();
+buildColors();schedule();setLegend();labels();
 
+/* center a point in the part of the map the detail panel does not cover */
+function focusPt(lat,lng,z){
+  var sz=map.getSize(),wide=window.innerWidth>=900,zz=z||map.getZoom();
+  var cx=wide?(sz.x-410)/2:sz.x/2,cy=wide?sz.y/2:(60+sz.y*.46)/2;
+  var p=map.project(L.latLng(lat,lng),zz).subtract([cx-sz.x/2,cy-sz.y/2]);
+  map.setView(map.unproject(p,zz),zz,{animate:false});
+}
 function padFor(){var wide=window.innerWidth>=900,h=$('v-map').clientHeight;return {tl:[24,64],br:[wide&&!$('panel').hidden?420:24,wide?24:Math.round(h*.5)]}}
 function fitIdx(arr,maxZ){
   var pts=arr.map(function(i){return FAC[i]}).filter(function(f){return f.lat!=null}).map(function(f){return [f.lat,f.lng]});
@@ -1032,7 +1060,7 @@ function openFac(i,fromMap){
   h+=btns('mgr',2,'Management company');
   if(!fo.length)h+='<div class="sect"><h3>Ownership</h3><div class="muted">Operated by '+esc(title(f.op))+'. No parent company or multi-building owner is listed for this building.</div></div>';
   showPanel(h);restyle();
-  if(fromMap!==false){var p=padFor();map.panTo([f.lat,f.lng],{animate:true})}
+  if(fromMap!==false&&f.lat!=null)focusPt(f.lat,f.lng,map.getZoom())
 }
 function linkBtn(lk,idx,o){return '<button class="linkbtn" data-act="sel" data-lens="'+lk+'" data-idx="'+idx+'"><span class="t">'+esc(title(o.n))+(o.t&&o.t.indexOf('IND')>-1?' <span class="muted small">(person)</span>':'')+'</span><span class="c">'+o.n_+' buildings &middot; '+o.states.length+' st.</span></button>'}
 function ownerStats(lk,o){
@@ -1072,7 +1100,7 @@ function runSearch(){
   if(fh.length){h+='<h4>Buildings</h4>';fh.forEach(function(i){var f=FAC[i];n++;h+='<button data-act="facsearch" data-i="'+i+'"><span class="nm">'+esc(title(f.nm))+'</span><span class="sub">'+esc(title(f.ci))+', '+esc(f.s)+'</span></button>'})}
   resEl.innerHTML=h||'<h4>No matches</h4>';resEl.hidden=false;
 }
-qEl.addEventListener('input',runSearch);
+var sTimer=0;qEl.addEventListener('input',function(){clearTimeout(sTimer);sTimer=setTimeout(runSearch,120)});
 qEl.addEventListener('focus',runSearch);
 document.addEventListener('click',function(e){if(!e.target.closest('.searchbar'))resEl.hidden=true});
 var sj=$('statejump');
@@ -1087,12 +1115,12 @@ sj.addEventListener('change',function(){
 document.addEventListener('click',function(e){
   var b=e.target.closest('[data-act]');if(!b)return;var a=b.dataset.act;
   if(a==='sel'){resEl.hidden=true;selectOwner(b.dataset.lens,+b.dataset.idx)}
-  else if(a==='fac'){openFac(+b.dataset.i);var f=FAC[+b.dataset.i];if(f.lat!=null)map.setView([f.lat,f.lng],Math.max(map.getZoom(),11))}
-  else if(a==='facsearch'){resEl.hidden=true;qEl.value='';sel=null;selSet=null;var f2=FAC[+b.dataset.i];map.setView([f2.lat,f2.lng],12);openFac(+b.dataset.i,false)}
+  else if(a==='fac'){openFac(+b.dataset.i,false);var f=FAC[+b.dataset.i];if(f.lat!=null)focusPt(f.lat,f.lng,Math.max(map.getZoom(),11))}
+  else if(a==='facsearch'){resEl.hidden=true;qEl.value='';sel=null;selSet=null;var f2=FAC[+b.dataset.i];openFac(+b.dataset.i,false);focusPt(f2.lat,f2.lng,12)}
   else if(a==='close'){clearSel()}
   else if(a==='back'){selFac=-1;renderOwnerPanel();restyle();fitIdx(LENS[sel.lens].list[sel.idx].f)}
   else if(a==='ownermap'){var d=drawerRef;closeDrawer();selectOwner(d.lens,d.idx)}
-  else if(a==='ownerfac'){var d2=drawerRef;closeDrawer();selectOwner(d2.lens,d2.idx,false);openFac(+b.dataset.i,false);var ff=FAC[+b.dataset.i];if(ff.lat!=null)map.setView([ff.lat,ff.lng],11)}
+  else if(a==='ownerfac'){var d2=drawerRef;closeDrawer();selectOwner(d2.lens,d2.idx,false);openFac(+b.dataset.i,false);var ff=FAC[+b.dataset.i];if(ff.lat!=null)focusPt(ff.lat,ff.lng,11)}
   else if(a==='closedrawer'){closeDrawer()}
 });
 
